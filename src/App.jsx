@@ -1,14 +1,20 @@
 import { useState, useRef, useEffect } from 'react';
-import { Plus, Search, Download, Upload, Clock, Users, ChefHat, Cloud, CloudOff, RefreshCw } from 'lucide-react';
+import {
+  Plus, Search, Download, Upload, Clock, Users, ChefHat,
+  Cloud, CloudOff, RefreshCw, Sparkles, CalendarDays, BookOpen
+} from 'lucide-react';
 import { storageService } from './services/storageService';
 import RecipeForm from './components/RecipeForm';
 import RecipeDetail from './components/RecipeDetail';
 import SyncModal from './components/SyncModal';
+import RecommendationsView from './components/RecommendationsView';
+import WeekendPlanner from './components/WeekendPlanner';
 
 export default function App() {
   const [recipes, setRecipes] = useState(() => storageService.getAll());
   const [search, setSearch] = useState('');
-  const [view, setView] = useState('list');
+  const [activeTab, setActiveTab] = useState('recipes'); // 'recipes' | 'recommendations' | 'weekend'
+  const [view, setView] = useState('list'); // 'list' | 'detail' | 'form'
   const [selectedRecipe, setSelectedRecipe] = useState(null);
   const [showSyncModal, setShowSyncModal] = useState(false);
   const [syncStatus, setSyncStatus] = useState(() =>
@@ -16,7 +22,6 @@ export default function App() {
   );
   const fileInputRef = useRef(null);
 
-  // Sincronizar automáticamente al abrir la app
   useEffect(() => {
     if (!storageService.getGitHubConfig()) return;
     storageService
@@ -83,6 +88,17 @@ export default function App() {
     e.target.value = '';
   };
 
+  const openRecipeDetail = (recipe) => {
+    setSelectedRecipe(recipe);
+    setView('detail');
+  };
+
+  const switchTab = (tab) => {
+    setActiveTab(tab);
+    setView('list');
+    setSelectedRecipe(null);
+  };
+
   const filteredRecipes = recipes.filter((r) => {
     const q = search.toLowerCase();
     const matchTitle = r.titulo.toLowerCase().includes(q);
@@ -96,7 +112,7 @@ export default function App() {
       <header className="bg-white border-b border-stone-200 sticky top-0 z-10">
         <div className="max-w-5xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
           <div
-            onClick={() => { setView('list'); setSelectedRecipe(null); }}
+            onClick={() => switchTab('recipes')}
             className="flex items-center gap-2 cursor-pointer"
           >
             <ChefHat className="w-7 h-7 text-emerald-600" />
@@ -104,7 +120,6 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2">
-            {/* Botón de estado de sincronización */}
             <button
               onClick={() => setShowSyncModal(true)}
               className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-sm cursor-pointer ${
@@ -154,6 +169,42 @@ export default function App() {
             </button>
           </div>
         </div>
+
+        {/* Barra de navegación de secciones */}
+        <nav className="max-w-5xl mx-auto px-4 flex gap-1 border-t border-stone-100">
+          <button
+            onClick={() => switchTab('recipes')}
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors cursor-pointer ${
+              activeTab === 'recipes' && view === 'list'
+                ? 'border-emerald-600 text-emerald-700'
+                : 'border-transparent text-stone-500 hover:text-stone-800'
+            }`}
+          >
+            <BookOpen className="w-4 h-4" /> Recetario ({recipes.length})
+          </button>
+
+          <button
+            onClick={() => switchTab('recommendations')}
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors cursor-pointer ${
+              activeTab === 'recommendations' && view === 'list'
+                ? 'border-emerald-600 text-emerald-700'
+                : 'border-transparent text-stone-500 hover:text-stone-800'
+            }`}
+          >
+            <Sparkles className="w-4 h-4" /> Recomendaciones
+          </button>
+
+          <button
+            onClick={() => switchTab('weekend')}
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors cursor-pointer ${
+              activeTab === 'weekend' && view === 'list'
+                ? 'border-emerald-600 text-emerald-700'
+                : 'border-transparent text-stone-500 hover:text-stone-800'
+            }`}
+          >
+            <CalendarDays className="w-4 h-4" /> Fin de Semana
+          </button>
+        </nav>
       </header>
 
       <main className="max-w-5xl mx-auto px-4 pt-6">
@@ -175,7 +226,15 @@ export default function App() {
           />
         )}
 
-        {view === 'list' && (
+        {view === 'list' && activeTab === 'recommendations' && (
+          <RecommendationsView recipes={recipes} onSelectRecipe={openRecipeDetail} />
+        )}
+
+        {view === 'list' && activeTab === 'weekend' && (
+          <WeekendPlanner recipes={recipes} onSelectRecipe={openRecipeDetail} />
+        )}
+
+        {view === 'list' && activeTab === 'recipes' && (
           <div className="space-y-6">
             <div className="relative">
               <Search className="w-5 h-5 text-stone-400 absolute left-3.5 top-3" />
@@ -199,7 +258,7 @@ export default function App() {
                 {filteredRecipes.map((recipe) => (
                   <div
                     key={recipe.id}
-                    onClick={() => { setSelectedRecipe(recipe); setView('detail'); }}
+                    onClick={() => openRecipeDetail(recipe)}
                     className="bg-white rounded-xl border border-stone-200 p-5 hover:shadow-md transition-shadow cursor-pointer flex flex-col justify-between"
                   >
                     <div>
