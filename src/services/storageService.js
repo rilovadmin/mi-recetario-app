@@ -1,6 +1,8 @@
+import { normalizeRecipe } from '../models/recipeModel';
+
 const STORAGE_KEY = 'recetario_db_v1';
 const GITHUB_CONFIG_KEY = 'recetario_github_config_v1';
-const FILE_PATH = 'recetas.json';
+const RECIPES_FILE = 'recetas.json';
 
 function utf8ToBase64(str) {
   const bytes = new TextEncoder().encode(str);
@@ -23,20 +25,23 @@ function base64ToUtf8(base64) {
 export const storageService = {
   getAll() {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    return JSON.parse(raw).map(normalizeRecipe);
   },
 
   saveAll(recipes) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(recipes));
+    const normalized = recipes.map(normalizeRecipe);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
   },
 
   saveRecipe(recipe) {
     const recipes = this.getAll();
-    const index = recipes.findIndex((r) => r.id === recipe.id);
+    const cleanRecipe = normalizeRecipe(recipe);
+    const index = recipes.findIndex((r) => r.id === cleanRecipe.id);
     if (index >= 0) {
-      recipes[index] = recipe;
+      recipes[index] = cleanRecipe;
     } else {
-      recipes.unshift(recipe);
+      recipes.unshift(cleanRecipe);
     }
     this.saveAll(recipes);
     return recipes;
@@ -44,6 +49,26 @@ export const storageService = {
 
   deleteRecipe(id) {
     const recipes = this.getAll().filter((r) => r.id !== id);
+    this.saveAll(recipes);
+    return recipes;
+  },
+
+  updateRecipeStock(id, delta, cookedDate = null) {
+    const recipes = this.getAll();
+    const index = recipes.findIndex((r) => r.id === id);
+    if (index < 0) return recipes;
+
+    const current = recipes[index];
+    const nextStock = Math.max(0, (current.raciones_disponibles || 0) + delta);
+    const nextHistory = cookedDate
+      ? [...(current.historial_cocinado || []), cookedDate]
+      : current.historial_cocinado || [];
+
+    recipes[index] = {
+      ...current,
+      raciones_disponibles: nextStock,
+      historial_cocinado: nextHistory
+    };
     this.saveAll(recipes);
     return recipes;
   },
@@ -65,11 +90,12 @@ export const storageService = {
     if (!Array.isArray(parsed)) {
       throw new Error('El archivo no tiene el formato correcto.');
     }
-    this.saveAll(parsed);
-    return parsed;
+    const normalized = parsed.map(normalizeRecipe);
+    this.saveAll(normalized);
+    return normalized;
   },
 
-  // --- SINCRONIZACIÓN CON GITHUB ---
+  // --- SINCRONIZACIÓN GENÉRICA CON GITHUB ---
 
   getGitHubConfig() {
     const raw = localStorage.getItem(GITHUB_CONFIG_KEY);
@@ -91,8 +117,8 @@ export const storageService = {
     );
   },
 
-  async _fetchGitHubFile(config) {
-    const url = `https://api.github.com/repos/${config.owner}/${config.repo}/contents/${FILE_PATH}`;
+  async _fetchGitHubRaw(filePath, config) {
+    const url = `https://api.github.com/repos/${config.owner}/${config.repo}/contents/${filePath}`;
     const res = await fetch(url, {
       cache: 'no-store',
       headers: {
@@ -107,15 +133,23 @@ export const storageService = {
     return res.json();
   },
 
-  async pushToGitHub(recipes, customConfig = null) {
+  async fetchJsonFromGitHub(filePath, customConfig = null) {
+    const config = customConfig || this.getGitHubConfig();
+    if (!config) return null;
+    const fileData = await this._fetchGitHubRaw(filePath, config);
+    if (!fileData) return null;
+    return JSON.parse(base64ToUtf8(fileData.content));
+  },
+
+  async pushJsonToGitHub(filePath, data, commitMessage, customConfig = null) {
     const config = customConfig || this.getGitHubConfig();
     if (!config) return;
 
-    const existing = await this._fetchGitHubFile(config);
-    const url = `https://api.github.com/repos/${config.owner}/${config.repo}/contents/${FILE_PATH}`;
+    const existing = await this._fetchGitHubRaw(filePath, config);
+    const url = `https://api.github.com/repos/${config.owner}/${config.repo}/contents/${filePath}`;
     const body = {
-      message: `Actualizar recetas (${new Date().toLocaleString('es-ES')})`,
-      content: utf8ToBase64(JSON.stringify(recipes, null, 2))
+      message: commitMessage,
+      content: utf8ToBase64(JSON.stringify(data, null, 2))
     };
     if (existing?.sha) {
       body.sha = existing.sha;
@@ -132,27 +166,34 @@ export const storageService = {
     });
 
     if (!res.ok) {
-      throw new Error(`No se pudo guardar en GitHub (${res.status}).`);
+      throw new Error(`No se pudo guardar ${filePath} en GitHub (${res.status}).`);
     }
+  },
+
+  async pushToGitHub(recipes, customConfig = null) {
+    await this.pushJsonToGitHub(
+      RECIPES_FILE,
+      recipes.map(normalizeRecipe),
+      `Actualizar recetas (${new Date().toLocaleString('es-ES')})`,
+      customConfig
+    );
   },
 
   async syncFromGitHub(customConfig = null) {
     const config = customConfig || this.getGitHubConfig();
     if (!config) return this.getAll();
 
-    const fileData = await this._fetchGitHubFile(config);
-    if (!fileData) {
-      // Si el repositorio aún está vacío, subimos las recetas locales actuales
+    const remoteRecipes = await this.fetchJsonFromGitHub(RECIPES_FILE, config);
+    if (!remoteRecipes) {
       const localRecipes = this.getAll();
       await this.pushToGitHub(localRecipes, config);
       return localRecipes;
     }
 
-    const decoded = base64ToUtf8(fileData.content);
-    const remoteRecipes = JSON.parse(decoded);
     if (Array.isArray(remoteRecipes)) {
-      this.saveAll(remoteRecipes);
-      return remoteRecipes;
+      const normalized = remoteRecipes.map(normalizeRecipe);
+      this.saveAll(normalized);
+      return normalized;
     }
     return this.getAll();
   }

@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
 import {
   ArrowLeft, Clock, Users, Edit2, Trash2,
-  CheckCircle2, Calendar, Flame, Check, Sun
+  CheckCircle2, Calendar, Flame, Check, Sun, Snowflake
 } from 'lucide-react';
 
-export default function RecipeDetail({ recipe, onBack, onEdit, onDelete, onMarkCooked }) {
+export default function RecipeDetail({ recipe, onBack, onEdit, onDelete, onMarkCooked, onUpdateStock }) {
   const [raciones, setRaciones] = useState(recipe.raciones_base || 2);
   const [cookingMode, setCookingMode] = useState(false);
   const [wakeLockActive, setWakeLockActive] = useState(false);
@@ -12,8 +12,8 @@ export default function RecipeDetail({ recipe, onBack, onEdit, onDelete, onMarkC
   const [checkedSteps, setCheckedSteps] = useState({});
 
   const factor = raciones / (recipe.raciones_base || 1);
+  const stockDisponible = recipe.raciones_disponibles || 0;
 
-  // Mantener pantalla encendida cuando el Modo Cocina está activo
   useEffect(() => {
     let wakeLock = null;
 
@@ -152,6 +152,46 @@ export default function RecipeDetail({ recipe, onBack, onEdit, onDelete, onMarkC
           <span className="capitalize text-stone-500">Temporada: {recipe.temporada.join(', ')}</span>
         </div>
       </div>
+
+      {/* Control de raciones ya cocinadas en frigorífico / congelador */}
+      {!cookingMode && (
+        <div className="flex flex-wrap items-center justify-between gap-3 bg-sky-50/70 border border-sky-200/80 rounded-xl px-4 py-3">
+          <div className="flex items-center gap-2.5">
+            <Snowflake className="w-5 h-5 text-sky-600 flex-shrink-0" />
+            <div>
+              <p className="text-sm font-semibold text-sky-950">
+                Raciones listas en nevera / congelador: <span className="text-sky-700">{stockDisponible}</span>
+              </p>
+              <p className="text-xs text-sky-700/80">
+                Suma aquí los tuppers que guardes al cocinar de más o réstalos al comerlos.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 bg-white px-2.5 py-1 rounded-lg border border-sky-200">
+            <button
+              type="button"
+              disabled={stockDisponible === 0}
+              onClick={() => onUpdateStock(recipe.id, -1)}
+              className="px-2 font-bold text-sky-700 disabled:opacity-30 cursor-pointer"
+              title="Restar 1 ración consumida"
+            >
+              -1
+            </button>
+            <span className="text-xs font-bold text-stone-700 w-14 text-center">
+              {stockDisponible} tuppers
+            </span>
+            <button
+              type="button"
+              onClick={() => onUpdateStock(recipe.id, 1)}
+              className="px-2 font-bold text-sky-700 cursor-pointer"
+              title="Añadir 1 ración guardada"
+            >
+              +1
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Escalador de raciones + Ingredientes */}
       <div className="bg-white rounded-xl border border-stone-200/80 p-5 space-y-4">

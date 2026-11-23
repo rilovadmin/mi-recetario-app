@@ -1,20 +1,30 @@
 import { useState, useRef, useEffect } from 'react';
 import {
   Plus, Search, Download, Upload, Clock, Users, ChefHat,
-  Cloud, CloudOff, RefreshCw, Sparkles, CalendarDays, BookOpen
+  Cloud, CloudOff, RefreshCw, Sparkles, CalendarDays, BookOpen, Package, Snowflake
 } from 'lucide-react';
 import { storageService } from './services/storageService';
+import { pantryService, PANTRY_STATES } from './services/pantryService';
 import RecipeForm from './components/RecipeForm';
 import RecipeDetail from './components/RecipeDetail';
 import SyncModal from './components/SyncModal';
 import RecommendationsView from './components/RecommendationsView';
 import WeekendPlanner from './components/WeekendPlanner';
+import PantryView from './components/PantryView';
+
+const PLAN_KEY = 'recetario_weekend_v1';
+const PLAN_FILE = 'plan_semanal.json';
 
 export default function App() {
   const [recipes, setRecipes] = useState(() => storageService.getAll());
+  const [pantryItems, setPantryItems] = useState(() => pantryService.getAll());
+  const [plan, setPlan] = useState(() => {
+    const saved = localStorage.getItem(PLAN_KEY);
+    return saved ? JSON.parse(saved) : {};
+  });
   const [search, setSearch] = useState('');
-  const [activeTab, setActiveTab] = useState('recipes'); // 'recipes' | 'recommendations' | 'weekend'
-  const [view, setView] = useState('list'); // 'list' | 'detail' | 'form'
+  const [activeTab, setActiveTab] = useState('recipes');
+  const [view, setView] = useState('list');
   const [selectedRecipe, setSelectedRecipe] = useState(null);
   const [showSyncModal, setShowSyncModal] = useState(false);
   const [syncStatus, setSyncStatus] = useState(() =>
@@ -24,10 +34,18 @@ export default function App() {
 
   useEffect(() => {
     if (!storageService.getGitHubConfig()) return;
-    storageService
-      .syncFromGitHub()
-      .then((remoteRecipes) => {
+    Promise.all([
+      storageService.syncFromGitHub(),
+      pantryService.syncFromGitHub(),
+      storageService.fetchJsonFromGitHub(PLAN_FILE)
+    ])
+      .then(([remoteRecipes, remotePantry, remotePlan]) => {
         setRecipes(remoteRecipes);
+        setPantryItems(remotePantry);
+        if (remotePlan && typeof remotePlan === 'object') {
+          localStorage.setItem(PLAN_KEY, JSON.stringify(remotePlan));
+          setPlan(remotePlan);
+        }
         setSyncStatus('synced');
       })
       .catch(() => setSyncStatus('error'));
@@ -42,6 +60,45 @@ export default function App() {
     } catch {
       setSyncStatus('error');
     }
+  };
+
+  const handleUpdatePantry = async (updatedPantry) => {
+    setPantryItems(updatedPantry);
+    if (!storageService.getGitHubConfig()) return;
+    setSyncStatus('syncing');
+    try {
+      await pantryService.pushToGitHub(updatedPantry);
+      setSyncStatus('synced');
+    } catch {
+      setSyncStatus('error');
+    }
+  };
+
+  const handleUpdatePlan = async (updatedPlan) => {
+    setPlan(updatedPlan);
+    localStorage.setItem(PLAN_KEY, JSON.stringify(updatedPlan));
+    if (!storageService.getGitHubConfig()) return;
+    setSyncStatus('syncing');
+    try {
+      await storageService.pushJsonToGitHub(
+        PLAN_FILE,
+        updatedPlan,
+        `Actualizar plan semanal (${new Date().toLocaleString('es-ES')})`
+      );
+      setSyncStatus('synced');
+    } catch {
+      setSyncStatus('error');
+    }
+  };
+
+  const handleUpdateStock = async (id, delta, cookedDate = null) => {
+    const updated = storageService.updateRecipeStock(id, delta, cookedDate);
+    setRecipes(updated);
+    if (selectedRecipe && selectedRecipe.id === id) {
+      const refreshed = updated.find((r) => r.id === id);
+      if (refreshed) setSelectedRecipe(refreshed);
+    }
+    await syncToCloud(updated);
   };
 
   const handleSaveRecipe = async (recipe) => {
@@ -62,16 +119,7 @@ export default function App() {
 
   const handleMarkCooked = async (id) => {
     const hoy = new Date().toISOString().split('T')[0];
-    const target = recipes.find((r) => r.id === id);
-    if (!target) return;
-    const updatedRecipe = {
-      ...target,
-      historial_cocinado: [...(target.historial_cocinado || []), hoy]
-    };
-    const updatedList = storageService.saveRecipe(updatedRecipe);
-    setRecipes(updatedList);
-    setSelectedRecipe(updatedRecipe);
-    await syncToCloud(updatedList);
+    await handleUpdateStock(id, 0, hoy);
   };
 
   const handleImport = async (e) => {
@@ -98,6 +146,10 @@ export default function App() {
     setView('list');
     setSelectedRecipe(null);
   };
+
+  const lowPantryCount = pantryItems.filter(
+    (i) => i.estado === PANTRY_STATES.POCO || i.estado === PANTRY_STATES.AGOTADO
+  ).length;
 
   const filteredRecipes = recipes.filter((r) => {
     const q = search.toLowerCase();
@@ -171,10 +223,10 @@ export default function App() {
         </div>
 
         {/* Barra de navegación de secciones */}
-        <nav className="max-w-5xl mx-auto px-4 flex gap-1 border-t border-stone-100">
+        <nav className="max-w-5xl mx-auto px-4 flex gap-1 border-t border-stone-100 overflow-x-auto">
           <button
             onClick={() => switchTab('recipes')}
-            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors cursor-pointer ${
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 whitespace-nowrap transition-colors cursor-pointer ${
               activeTab === 'recipes' && view === 'list'
                 ? 'border-emerald-600 text-emerald-700'
                 : 'border-transparent text-stone-500 hover:text-stone-800'
@@ -185,7 +237,7 @@ export default function App() {
 
           <button
             onClick={() => switchTab('recommendations')}
-            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors cursor-pointer ${
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 whitespace-nowrap transition-colors cursor-pointer ${
               activeTab === 'recommendations' && view === 'list'
                 ? 'border-emerald-600 text-emerald-700'
                 : 'border-transparent text-stone-500 hover:text-stone-800'
@@ -196,13 +248,29 @@ export default function App() {
 
           <button
             onClick={() => switchTab('weekend')}
-            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors cursor-pointer ${
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 whitespace-nowrap transition-colors cursor-pointer ${
               activeTab === 'weekend' && view === 'list'
                 ? 'border-emerald-600 text-emerald-700'
                 : 'border-transparent text-stone-500 hover:text-stone-800'
             }`}
           >
-            <CalendarDays className="w-4 h-4" /> Fin de Semana
+            <CalendarDays className="w-4 h-4" /> Planificador
+          </button>
+
+          <button
+            onClick={() => switchTab('pantry')}
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 whitespace-nowrap transition-colors cursor-pointer ${
+              activeTab === 'pantry' && view === 'list'
+                ? 'border-emerald-600 text-emerald-700'
+                : 'border-transparent text-stone-500 hover:text-stone-800'
+            }`}
+          >
+            <Package className="w-4 h-4" /> Despensa
+            {lowPantryCount > 0 && (
+              <span className="ml-1 px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 text-xs font-bold">
+                {lowPantryCount}
+              </span>
+            )}
           </button>
         </nav>
       </header>
@@ -223,6 +291,7 @@ export default function App() {
             onEdit={(rec) => { setSelectedRecipe(rec); setView('form'); }}
             onDelete={handleDeleteRecipe}
             onMarkCooked={handleMarkCooked}
+            onUpdateStock={handleUpdateStock}
           />
         )}
 
@@ -231,7 +300,19 @@ export default function App() {
         )}
 
         {view === 'list' && activeTab === 'weekend' && (
-          <WeekendPlanner recipes={recipes} onSelectRecipe={openRecipeDetail} />
+          <WeekendPlanner
+            recipes={recipes}
+            pantryItems={pantryItems}
+            plan={plan}
+            onUpdatePlan={handleUpdatePlan}
+            onUpdatePantry={handleUpdatePantry}
+            onUpdateStock={handleUpdateStock}
+            onSelectRecipe={openRecipeDetail}
+          />
+        )}
+
+        {view === 'list' && activeTab === 'pantry' && (
+          <PantryView items={pantryItems} onUpdatePantry={handleUpdatePantry} />
         )}
 
         {view === 'list' && activeTab === 'recipes' && (
@@ -262,7 +343,17 @@ export default function App() {
                     className="bg-white rounded-xl border border-stone-200 p-5 hover:shadow-md transition-shadow cursor-pointer flex flex-col justify-between"
                   >
                     <div>
-                      <h3 className="font-bold text-lg text-stone-900 line-clamp-2">{recipe.titulo}</h3>
+                      <div className="flex items-start justify-between gap-2">
+                        <h3 className="font-bold text-lg text-stone-900 line-clamp-2">{recipe.titulo}</h3>
+                        {(recipe.raciones_disponibles || 0) > 0 && (
+                          <span
+                            className="flex-shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 text-xs font-bold"
+                            title="Raciones disponibles en frigorífico o congelador"
+                          >
+                            <Snowflake className="w-3 h-3" /> {recipe.raciones_disponibles}
+                          </span>
+                        )}
+                      </div>
                       <div className="flex items-center gap-4 mt-2 text-xs text-stone-500">
                         <span className="flex items-center gap-1"><Clock className="w-3.5 h-3.5" /> {recipe.tiempo_minutos} min</span>
                         <span className="flex items-center gap-1"><Users className="w-3.5 h-3.5" /> {recipe.raciones_base} rac.</span>
@@ -294,6 +385,16 @@ export default function App() {
           onClose={() => setShowSyncModal(false)}
           onSynced={(updatedRecipes) => {
             setRecipes(updatedRecipes);
+            pantryService.syncFromGitHub().then(setPantryItems).catch(() => {});
+            storageService
+              .fetchJsonFromGitHub(PLAN_FILE)
+              .then((remotePlan) => {
+                if (remotePlan) {
+                  localStorage.setItem(PLAN_KEY, JSON.stringify(remotePlan));
+                  setPlan(remotePlan);
+                }
+              })
+              .catch(() => {});
             setSyncStatus(storageService.getGitHubConfig() ? 'synced' : 'disconnected');
           }}
         />
