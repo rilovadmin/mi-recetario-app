@@ -4,18 +4,18 @@ import {
   Flame, Snowflake, PackagePlus, PackageCheck, ChevronDown, ChevronUp, Undo2, Plus, X
 } from 'lucide-react';
 import { getRecommendedRecipes } from '../services/recommendationService';
-import { pantryService, PANTRY_STATES } from '../services/pantryService';
+import { pantryService, PANTRY_STATES, normalizeIngredientName } from '../services/pantryService';
 
 const CHECKED_KEY = 'recetario_shopping_checked_v1';
 
 const DAYS = [
-  { id: 'lunes', label: 'Lunes', isWeekend: false },
-  { id: 'martes', label: 'Martes', isWeekend: false },
-  { id: 'miercoles', label: 'Miércoles', isWeekend: false },
-  { id: 'jueves', label: 'Jueves', isWeekend: false },
-  { id: 'viernes', label: 'Viernes', isWeekend: false },
-  { id: 'sabado', label: 'Sábado', isWeekend: true },
-  { id: 'domingo', label: 'Domingo', isWeekend: true }
+  { id: 'lunes', label: 'Lunes' },
+  { id: 'martes', label: 'Martes' },
+  { id: 'miercoles', label: 'Miércoles' },
+  { id: 'jueves', label: 'Jueves' },
+  { id: 'viernes', label: 'Viernes' },
+  { id: 'sabado', label: 'Sábado' },
+  { id: 'domingo', label: 'Domingo' }
 ];
 
 const MEALS = [
@@ -27,8 +27,7 @@ const ALL_SLOTS = DAYS.flatMap((day) =>
   MEALS.map((meal) => ({
     key: `${day.id}_${meal.id}`,
     dayLabel: day.label,
-    mealLabel: meal.label,
-    isWeekend: day.isWeekend
+    mealLabel: meal.label
   }))
 );
 
@@ -64,7 +63,6 @@ export default function WeekendPlanner({
   onUpdateStock,
   onSelectRecipe
 }) {
-  const [scope, setScope] = useState('week');
   const [addingToSlot, setAddingToSlot] = useState(null);
   const [showCoveredPantry, setShowCoveredPantry] = useState(false);
   const [checkedItems, setCheckedItems] = useState(() => {
@@ -75,8 +73,6 @@ export default function WeekendPlanner({
   useEffect(() => {
     localStorage.setItem(CHECKED_KEY, JSON.stringify(checkedItems));
   }, [checkedItems]);
-
-  const visibleDays = scope === 'weekend' ? DAYS.filter((d) => d.isWeekend) : DAYS;
 
   const buildDefaultDish = (recipeId) => {
     const recipe = recipes.find((r) => r.id === recipeId);
@@ -191,7 +187,6 @@ export default function WeekendPlanner({
     const suggestions = getRecommendedRecipes(recipes, { onlyCurrentSeason: false });
     if (suggestions.length === 0) return;
 
-    const targetSlots = ALL_SLOTS.filter((s) => (scope === 'weekend' ? s.isWeekend : true));
     const usedIds = new Set(
       Object.values(plan).flatMap((slot) => getSlotDishes(slot).map((d) => d.recipeId))
     );
@@ -201,7 +196,7 @@ export default function WeekendPlanner({
     const nextPlan = { ...plan };
     let idx = 0;
 
-    for (const slot of targetSlots) {
+    for (const slot of ALL_SLOTS) {
       const existing = getSlotDishes(nextPlan[slot.key]);
       if (existing.length === 0 && pool[idx % pool.length]) {
         const chosen = pool[idx % pool.length];
@@ -228,10 +223,11 @@ export default function WeekendPlanner({
     setCheckedItems({});
   };
 
-  // --- LISTA DE LA COMPRA INTELIGENTE (SUMA TODOS LOS PLATOS DE CADA COMIDA) ---
+  // --- LISTA DE LA COMPRA INTELIGENTE ---
   const { shoppingByCategory, coveredByPantry } = (() => {
     const aggregated = {};
 
+    // 1. Reunir ingredientes de todos los platos pendientes en modo "Cocinar"
     for (const slot of ALL_SLOTS) {
       const dishes = getSlotDishes(plan[slot.key]);
       for (const entry of dishes) {
@@ -243,13 +239,14 @@ export default function WeekendPlanner({
         const factor = entry.racionesCocinar / (recipe.raciones_base || 1);
 
         for (const ing of recipe.ingredientes || []) {
-          const cleanName = ing.nombre.trim().toLowerCase();
-          if (!cleanName) continue;
+          const normName = normalizeIngredientName(ing.nombre);
+          if (!normName) continue;
 
-          const key = `${cleanName}__${ing.unidad}`;
+          const key = `${normName}__${ing.unidad}`;
           if (!aggregated[key]) {
             aggregated[key] = {
               key,
+              normName,
               nombre: ing.nombre.trim(),
               unidad: ing.unidad,
               categoria: ing.categoria || 'otros',
@@ -265,11 +262,13 @@ export default function WeekendPlanner({
 
     const toBuyList = [];
     const coveredList = [];
-    const includedNames = new Set();
+    const includedNormalizedNames = new Set();
 
+    // 2. Filtrar contra Despensa:
+    //    - Si coincide en Despensa y está en "Tengo" -> NO sale en lista de compra (va a coveredByPantry).
+    //    - Si NO está en Despensa (ej. azafrán) o está en "Agotado" / "Queda poco" -> SÍ sale en lista de compra.
     for (const item of Object.values(aggregated)) {
-      const clean = item.nombre.toLowerCase();
-      includedNames.add(clean);
+      includedNormalizedNames.add(item.normName);
       const pantryMatch = pantryService.findMatch(item.nombre, pantryItems);
 
       if (pantryMatch && pantryMatch.estado === PANTRY_STATES.TENGO) {
@@ -283,12 +282,14 @@ export default function WeekendPlanner({
       }
     }
 
+    // 3. Añadir ingredientes de Despensa marcados como "Agotado" o "Queda poco" aunque no estén en recetas
     for (const pItem of pantryItems) {
       if (pItem.estado === PANTRY_STATES.POCO || pItem.estado === PANTRY_STATES.AGOTADO) {
-        const clean = pItem.nombre.trim().toLowerCase();
-        if (!includedNames.has(clean)) {
+        const normName = normalizeIngredientName(pItem.nombre);
+        if (!includedNormalizedNames.has(normName)) {
           toBuyList.push({
             key: `pantry_${pItem.id}`,
+            normName,
             nombre: pItem.nombre.trim(),
             unidad: 'reponer',
             categoria: pItem.categoria || 'despensa',
@@ -335,77 +336,41 @@ export default function WeekendPlanner({
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-      {/* Columna izquierda: Calendario Semanal */}
+      {/* Columna izquierda: Planificador Semanal (Lunes a Domingo) */}
       <div className="lg:col-span-7 space-y-4">
         <div className="bg-white rounded-2xl border border-stone-200 p-5 shadow-sm space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-100 pb-3">
             <div className="flex items-center gap-2">
               <CalendarDays className="w-5 h-5 text-emerald-600" />
-              <h2 className="font-bold text-lg text-stone-800">Planificador</h2>
+              <h2 className="font-bold text-lg text-stone-800">Planificador semanal</h2>
             </div>
 
-            <div className="flex rounded-lg border border-stone-200 overflow-hidden text-xs font-semibold">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={() => setScope('week')}
-                className={`px-3 py-1.5 cursor-pointer transition-colors ${
-                  scope === 'week'
-                    ? 'bg-emerald-600 text-white'
-                    : 'bg-white text-stone-600 hover:bg-stone-50'
-                }`}
+                onClick={handleAutoSuggest}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 text-xs font-semibold cursor-pointer"
               >
-                Semana (L-D)
+                <Sparkles className="w-3.5 h-3.5" /> Rellenar huecos
               </button>
               <button
                 type="button"
-                onClick={() => setScope('weekend')}
-                className={`px-3 py-1.5 cursor-pointer transition-colors ${
-                  scope === 'weekend'
-                    ? 'bg-emerald-600 text-white'
-                    : 'bg-white text-stone-600 hover:bg-stone-50'
-                }`}
+                onClick={handleClearPlan}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-stone-200 text-stone-500 hover:text-stone-800 text-xs cursor-pointer"
               >
-                Fin de semana
+                <RotateCcw className="w-3.5 h-3.5" /> Limpiar
               </button>
             </div>
-          </div>
-
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <button
-              type="button"
-              onClick={handleAutoSuggest}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 text-xs font-semibold cursor-pointer"
-            >
-              <Sparkles className="w-3.5 h-3.5" /> Rellenar huecos sugeridos
-            </button>
-            <button
-              type="button"
-              onClick={handleClearPlan}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-stone-200 text-stone-500 hover:text-stone-800 text-xs cursor-pointer"
-            >
-              <RotateCcw className="w-3.5 h-3.5" /> Limpiar semana
-            </button>
           </div>
 
           {/* Días y comidas */}
           <div className="space-y-4">
-            {visibleDays.map((day) => (
+            {DAYS.map((day) => (
               <div
                 key={day.id}
-                className={`rounded-xl border p-4 space-y-3 ${
-                  day.isWeekend
-                    ? 'bg-emerald-50/25 border-emerald-200/70'
-                    : 'bg-stone-50/70 border-stone-200/80'
-                }`}
+                className="rounded-xl border border-stone-200/80 bg-stone-50/70 p-4 space-y-3"
               >
-                <div className="flex items-center justify-between">
-                  <h3 className="font-bold text-sm text-stone-800">{day.label}</h3>
-                  {day.isWeekend && (
-                    <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
-                      Fin de semana
-                    </span>
-                  )}
-                </div>
+                <h3 className="font-bold text-sm text-stone-800">{day.label}</h3>
 
                 <div className="space-y-3">
                   {MEALS.map((meal) => {
@@ -430,7 +395,6 @@ export default function WeekendPlanner({
                           )}
                         </div>
 
-                        {/* Si no hay platos aún, selector inicial */}
                         {dishes.length === 0 && (
                           <select
                             value=""
@@ -449,7 +413,6 @@ export default function WeekendPlanner({
                           </select>
                         )}
 
-                        {/* Lista de platos asignados a esta comida/cena */}
                         {dishes.map((entry, dishIdx) => {
                           const assignedRecipe = recipes.find((r) => r.id === entry.recipeId);
                           if (!assignedRecipe) return null;
@@ -510,7 +473,6 @@ export default function WeekendPlanner({
                                 </button>
                               </div>
 
-                              {/* Controles de Cocinar vs Tupper */}
                               <div className="pt-1.5 border-t border-stone-200/60 flex flex-wrap items-center justify-between gap-2 text-xs">
                                 <div className="flex rounded-md border border-stone-200 overflow-hidden font-medium">
                                   <button
@@ -668,7 +630,6 @@ export default function WeekendPlanner({
                           );
                         })}
 
-                        {/* Selector desplegable para añadir un 2º o 3º plato */}
                         {addingToSlot === slotKey && (
                           <div className="flex items-center gap-2 pt-1">
                             <select

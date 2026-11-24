@@ -9,6 +9,16 @@ export const PANTRY_STATES = {
   AGOTADO: 'agotado'
 };
 
+export function normalizeIngredientName(str) {
+  return (str || '')
+    .toString()
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ');
+}
+
 export const pantryService = {
   getAll() {
     const raw = localStorage.getItem(PANTRY_KEY);
@@ -21,11 +31,12 @@ export const pantryService = {
 
   addItem({ nombre, categoria = 'despensa', estado = PANTRY_STATES.TENGO }) {
     const cleanName = nombre.trim();
-    if (!cleanName) return this.getAll();
+    const normalizedTarget = normalizeIngredientName(cleanName);
+    if (!normalizedTarget) return this.getAll();
 
     const items = this.getAll();
     const existingIdx = items.findIndex(
-      (i) => i.nombre.trim().toLowerCase() === cleanName.toLowerCase()
+      (i) => normalizeIngredientName(i.nombre) === normalizedTarget
     );
 
     if (existingIdx >= 0) {
@@ -52,9 +63,9 @@ export const pantryService = {
   },
 
   markAsReplenished(nombre) {
-    const target = nombre.trim().toLowerCase();
+    const normalizedTarget = normalizeIngredientName(nombre);
     const items = this.getAll().map((item) =>
-      item.nombre.trim().toLowerCase() === target
+      normalizeIngredientName(item.nombre) === normalizedTarget
         ? { ...item, estado: PANTRY_STATES.TENGO }
         : item
     );
@@ -70,9 +81,9 @@ export const pantryService = {
 
   findMatch(ingredientName, pantryItems = null) {
     const list = pantryItems || this.getAll();
-    const clean = ingredientName.trim().toLowerCase();
-    if (!clean) return null;
-    return list.find((item) => item.nombre.trim().toLowerCase() === clean) || null;
+    const normalizedTarget = normalizeIngredientName(ingredientName);
+    if (!normalizedTarget) return null;
+    return list.find((item) => normalizeIngredientName(item.nombre) === normalizedTarget) || null;
   },
 
   async pushToGitHub(items) {
