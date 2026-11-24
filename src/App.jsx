@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Plus, Search, Download, Upload, Clock, Users, ChefHat,
   Cloud, CloudOff, RefreshCw, Sparkles, CalendarDays, BookOpen, Package, Snowflake
@@ -31,31 +31,49 @@ export default function App() {
     storageService.getGitHubConfig() ? 'syncing' : 'disconnected'
   );
   const fileInputRef = useRef(null);
+  const lastSyncRef = useRef(0);
+
+  const pullAllFromCloud = useCallback(async () => {
+    if (!storageService.getGitHubConfig()) return;
+    setSyncStatus('syncing');
+    try {
+      const [remoteRecipes, remotePantry, remotePlan] = await Promise.all([
+        storageService.syncFromGitHub(),
+        pantryService.syncFromGitHub(),
+        storageService.fetchJsonFromGitHub(PLAN_FILE)
+      ]);
+      setRecipes(remoteRecipes);
+      setPantryItems(remotePantry);
+      if (remotePlan && typeof remotePlan === 'object') {
+        localStorage.setItem(PLAN_KEY, JSON.stringify(remotePlan));
+        setPlan(remotePlan);
+      }
+      lastSyncRef.current = Date.now();
+      setSyncStatus('synced');
+    } catch {
+      setSyncStatus('error');
+    }
+  }, []);
 
   useEffect(() => {
-    if (!storageService.getGitHubConfig()) return;
-    Promise.all([
-      storageService.syncFromGitHub(),
-      pantryService.syncFromGitHub(),
-      storageService.fetchJsonFromGitHub(PLAN_FILE)
-    ])
-      .then(([remoteRecipes, remotePantry, remotePlan]) => {
-        setRecipes(remoteRecipes);
-        setPantryItems(remotePantry);
-        if (remotePlan && typeof remotePlan === 'object') {
-          localStorage.setItem(PLAN_KEY, JSON.stringify(remotePlan));
-          setPlan(remotePlan);
-        }
-        setSyncStatus('synced');
-      })
-      .catch(() => setSyncStatus('error'));
-  }, []);
+    pullAllFromCloud();
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && Date.now() - lastSyncRef.current > 8000) {
+        pullAllFromCloud();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [pullAllFromCloud]);
 
   const syncToCloud = async (updatedList) => {
     if (!storageService.getGitHubConfig()) return;
     setSyncStatus('syncing');
     try {
       await storageService.pushToGitHub(updatedList);
+      lastSyncRef.current = Date.now();
       setSyncStatus('synced');
     } catch {
       setSyncStatus('error');
@@ -68,6 +86,7 @@ export default function App() {
     setSyncStatus('syncing');
     try {
       await pantryService.pushToGitHub(updatedPantry);
+      lastSyncRef.current = Date.now();
       setSyncStatus('synced');
     } catch {
       setSyncStatus('error');
@@ -85,6 +104,7 @@ export default function App() {
         updatedPlan,
         `Actualizar plan semanal (${new Date().toLocaleString('es-ES')})`
       );
+      lastSyncRef.current = Date.now();
       setSyncStatus('synced');
     } catch {
       setSyncStatus('error');
@@ -172,27 +192,42 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowSyncModal(true)}
-              className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-sm cursor-pointer ${
-                syncStatus === 'synced'
-                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                  : syncStatus === 'error'
-                  ? 'border-red-200 bg-red-50 text-red-700'
-                  : 'border-stone-200 text-stone-700 hover:bg-stone-50'
-              }`}
-              title="Configurar sincronización en la nube"
-            >
-              {syncStatus === 'syncing' && <RefreshCw className="w-4 h-4 animate-spin" />}
-              {syncStatus === 'synced' && <Cloud className="w-4 h-4" />}
-              {(syncStatus === 'disconnected' || syncStatus === 'error') && <CloudOff className="w-4 h-4" />}
-              <span className="hidden sm:inline">
-                {syncStatus === 'syncing' && 'Sincronizando...'}
-                {syncStatus === 'synced' && 'Sincronizado'}
-                {syncStatus === 'error' && 'Error nube'}
-                {syncStatus === 'disconnected' && 'Conectar nube'}
-              </span>
-            </button>
+            <div className="flex items-center">
+              <button
+                onClick={() => setShowSyncModal(true)}
+                className={`flex items-center gap-1.5 px-3 py-2 border text-sm cursor-pointer ${
+                  syncStatus !== 'disconnected' ? 'rounded-l-lg' : 'rounded-lg'
+                } ${
+                  syncStatus === 'synced'
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                    : syncStatus === 'error'
+                    ? 'border-red-200 bg-red-50 text-red-700'
+                    : 'border-stone-200 text-stone-700 hover:bg-stone-50'
+                }`}
+                title="Configurar sincronización en la nube"
+              >
+                {syncStatus === 'syncing' && <RefreshCw className="w-4 h-4 animate-spin" />}
+                {syncStatus === 'synced' && <Cloud className="w-4 h-4" />}
+                {(syncStatus === 'disconnected' || syncStatus === 'error') && <CloudOff className="w-4 h-4" />}
+                <span className="hidden sm:inline">
+                  {syncStatus === 'syncing' && 'Sincronizando...'}
+                  {syncStatus === 'synced' && 'Sincronizado'}
+                  {syncStatus === 'error' && 'Reintentar'}
+                  {syncStatus === 'disconnected' && 'Conectar nube'}
+                </span>
+              </button>
+
+              {syncStatus !== 'disconnected' && (
+                <button
+                  onClick={pullAllFromCloud}
+                  disabled={syncStatus === 'syncing'}
+                  className="px-2.5 py-2 rounded-r-lg border border-l-0 border-stone-200 bg-white text-stone-600 hover:bg-stone-50 disabled:opacity-50 cursor-pointer"
+                  title="Forzar sincronización ahora"
+                >
+                  <RefreshCw className={`w-4 h-4 ${syncStatus === 'syncing' ? 'animate-spin' : ''}`} />
+                </button>
+              )}
+            </div>
 
             <button
               onClick={() => storageService.exportJSON()}
@@ -222,7 +257,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* Barra de navegación de secciones */}
+        {/* Barra de navegación */}
         <nav className="max-w-5xl mx-auto px-4 flex gap-1 border-t border-stone-100 overflow-x-auto">
           <button
             onClick={() => switchTab('recipes')}
@@ -383,19 +418,8 @@ export default function App() {
       {showSyncModal && (
         <SyncModal
           onClose={() => setShowSyncModal(false)}
-          onSynced={(updatedRecipes) => {
-            setRecipes(updatedRecipes);
-            pantryService.syncFromGitHub().then(setPantryItems).catch(() => {});
-            storageService
-              .fetchJsonFromGitHub(PLAN_FILE)
-              .then((remotePlan) => {
-                if (remotePlan) {
-                  localStorage.setItem(PLAN_KEY, JSON.stringify(remotePlan));
-                  setPlan(remotePlan);
-                }
-              })
-              .catch(() => {});
-            setSyncStatus(storageService.getGitHubConfig() ? 'synced' : 'disconnected');
+          onSynced={() => {
+            pullAllFromCloud();
           }}
         />
       )}

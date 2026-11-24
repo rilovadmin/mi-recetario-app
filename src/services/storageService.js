@@ -4,6 +4,8 @@ const STORAGE_KEY = 'recetario_db_v1';
 const GITHUB_CONFIG_KEY = 'recetario_github_config_v1';
 const RECIPES_FILE = 'recetas.json';
 
+let githubQueue = Promise.resolve();
+
 function utf8ToBase64(str) {
   const bytes = new TextEncoder().encode(str);
   let binary = '';
@@ -95,7 +97,7 @@ export const storageService = {
     return normalized;
   },
 
-  // --- SINCRONIZACIÓN GENÉRICA CON GITHUB ---
+  // --- SINCRONIZACIÓN EN COLA CON GITHUB ---
 
   getGitHubConfig() {
     const raw = localStorage.getItem(GITHUB_CONFIG_KEY);
@@ -145,29 +147,41 @@ export const storageService = {
     const config = customConfig || this.getGitHubConfig();
     if (!config) return;
 
-    const existing = await this._fetchGitHubRaw(filePath, config);
-    const url = `https://api.github.com/repos/${config.owner}/${config.repo}/contents/${filePath}`;
-    const body = {
-      message: commitMessage,
-      content: utf8ToBase64(JSON.stringify(data, null, 2))
+    const executePush = async () => {
+      const attempt = async () => {
+        const existing = await this._fetchGitHubRaw(filePath, config);
+        const url = `https://api.github.com/repos/${config.owner}/${config.repo}/contents/${filePath}`;
+        const body = {
+          message: commitMessage,
+          content: utf8ToBase64(JSON.stringify(data, null, 2))
+        };
+        if (existing?.sha) {
+          body.sha = existing.sha;
+        }
+
+        return fetch(url, {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${config.token}`,
+            Accept: 'application/vnd.github+json',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(body)
+        });
+      };
+
+      let res = await attempt();
+      if (res.status === 409) {
+        res = await attempt();
+      }
+      if (!res.ok) {
+        throw new Error(`No se pudo guardar ${filePath} en GitHub (${res.status}).`);
+      }
     };
-    if (existing?.sha) {
-      body.sha = existing.sha;
-    }
 
-    const res = await fetch(url, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${config.token}`,
-        Accept: 'application/vnd.github+json',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
-    });
-
-    if (!res.ok) {
-      throw new Error(`No se pudo guardar ${filePath} en GitHub (${res.status}).`);
-    }
+    const nextTask = githubQueue.then(executePush, executePush);
+    githubQueue = nextTask.catch(() => {});
+    return nextTask;
   },
 
   async pushToGitHub(recipes, customConfig = null) {
